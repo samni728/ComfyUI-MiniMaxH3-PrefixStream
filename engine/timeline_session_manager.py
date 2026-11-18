@@ -1803,6 +1803,7 @@ def export_master_to_video_file(
                     proc.stdin.write(chunk_u8.numpy().tobytes())
 
                 proc.stdin.close()
+                proc.stdin = None
                 stdout_data, stderr_data = proc.communicate()
             except Exception as e:
                 proc.kill()

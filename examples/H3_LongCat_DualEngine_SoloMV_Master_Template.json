@@ -1,0 +1,335 @@
+{
+  "id": "h3-longcat-dual-engine-solo-mv-master-v2",
+  "revision": 2,
+  "last_node_id": 12,
+  "last_link_id": 18,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadAudio",
+      "title": "1. Authoritative Master Song (48kHz / 44.1kHz Original or Seed-VC Vocal)",
+      "pos": [80, 80],
+      "size": [360, 110],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [1]}],
+      "widgets_values": ["shi_zi_hong_le_seedvc_master_48k.wav"]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "title": "2. Master Character & Palette Anchor (FLUX.3 Klein Keyframe)",
+      "pos": [80, 230],
+      "size": [360, 310],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2, 12]},
+        {"name": "MASK", "type": "MASK", "links": []}
+      ],
+      "widgets_values": ["shi_zi_hong_le_anchor_grade.png", "image"]
+    },
+    {
+      "id": 3,
+      "type": "H3VRAMStageGate8GB",
+      "title": "3. Stage Gate: Evict Seed-VC / FLUX Before Video Assembly",
+      "pos": [490, 80],
+      "size": [400, 200],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "passthrough", "type": "*", "link": 1}
+      ],
+      "outputs": [
+        {"name": "passthrough_out", "type": "*", "links": [3]},
+        {"name": "vram_report_json", "type": "STRING", "links": []},
+        {"name": "free_vram_mb", "type": "FLOAT", "links": []}
+      ],
+      "widgets_values": [
+        "Post-SeedVC/FLUX -> Pre-MV-Montage (8GB Evict)",
+        true,
+        true,
+        true,
+        8188,
+        true
+      ]
+    },
+    {
+      "id": 4,
+      "type": "H3FourSentencePromptNode",
+      "title": "4. B-Roll Shot Prompt (H3 拍场面: Scenery & Action)",
+      "pos": [490, 320],
+      "size": [400, 330],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "compiled_prompt", "type": "STRING", "links": []},
+        {"name": "negative_prompt", "type": "STRING", "links": []},
+        {"name": "estimated_obedience", "type": "INT", "links": []},
+        {"name": "has_contradiction", "type": "BOOLEAN", "links": []},
+        {"name": "diagnostics_json", "type": "STRING", "links": []}
+      ],
+      "widgets_values": [
+        "mv_broll",
+        "秋日乾头村古石桥与柿子树",
+        "微风吹落红叶掠过溪面，远处青瓦土墙炊烟缓缓升起",
+        "全景",
+        "Tracking 横移跟拍",
+        "柔和秋日侧逆光",
+        "80年代复古胶片颗粒，暖金秋色，怀旧克制",
+        "auto_resolve",
+        "",
+        "",
+        "",
+        "",
+        "字幕，现代路人",
+        0.0,
+        "<Picture 5>",
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "H3FourSentencePromptNode",
+      "title": "5. Reaction Shot Prompt (A30 Closed-Lip Listening Fix)",
+      "pos": [490, 690],
+      "size": [400, 330],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "compiled_prompt", "type": "STRING", "links": []},
+        {"name": "negative_prompt", "type": "STRING", "links": []},
+        {"name": "estimated_obedience", "type": "INT", "links": []},
+        {"name": "has_contradiction", "type": "BOOLEAN", "links": []},
+        {"name": "diagnostics_json", "type": "STRING", "links": []}
+      ],
+      "widgets_values": [
+        "listening_reaction",
+        "麻花辫蓝布衫年轻女孩",
+        "倚在老木窗边望向石桥方向，手指轻拢衣角",
+        "中近景",
+        "Dolly in 缓慢推近",
+        "温暖窗边侧光",
+        "80年代胶片质感，柔和景深，情绪静谧",
+        "auto_resolve",
+        "",
+        "",
+        "",
+        "",
+        "开口说话，字幕",
+        0.0,
+        "<Picture 3>",
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "VHS_LoadVideo",
+      "title": "6. LongCat-Video-Avatar 1.6 A-Roll #1 ('唱整段' Verse, 30fps)",
+      "pos": [950, 80],
+      "size": [360, 220],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [4]},
+        {"name": "frame_count", "type": "INT", "links": []},
+        {"name": "audio", "type": "AUDIO", "links": []},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": []}
+      ],
+      "widgets_values": ["longcat_aroll_verse_01_30fps.mp4", 0, 0, 0, "Disabled", 1, 0]
+    },
+    {
+      "id": 7,
+      "type": "VHS_LoadVideo",
+      "title": "7. H3 PrefixStream Micro-Chain B-Roll #1 ('拍场面' Bridge Scenery, 24fps)",
+      "pos": [950, 340],
+      "size": [360, 220],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [5, 11]},
+        {"name": "frame_count", "type": "INT", "links": []},
+        {"name": "audio", "type": "AUDIO", "links": []},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": []}
+      ],
+      "widgets_values": ["h3_prefix_broll_chain01_24fps.mp4", 0, 0, 0, "Disabled", 1, 0]
+    },
+    {
+      "id": 8,
+      "type": "VHS_LoadVideo",
+      "title": "8. LongCat-Video-Avatar 1.6 A-Roll #2 ('唱整段' Chorus, 30fps)",
+      "pos": [950, 600],
+      "size": [360, 220],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [6]},
+        {"name": "frame_count", "type": "INT", "links": []},
+        {"name": "audio", "type": "AUDIO", "links": []},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": []}
+      ],
+      "widgets_values": ["longcat_aroll_chorus_02_30fps.mp4", 0, 0, 0, "Disabled", 1, 0]
+    },
+    {
+      "id": 9,
+      "type": "VHS_LoadVideo",
+      "title": "9. H3 Closed-Lip Reaction B-Roll #2 ('闭唇倾听', 24fps)",
+      "pos": [950, 860],
+      "size": [360, 220],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [7]},
+        {"name": "frame_count", "type": "INT", "links": []},
+        {"name": "audio", "type": "AUDIO", "links": []},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": []}
+      ],
+      "widgets_values": ["h3_broll_female_listening_02_24fps.mp4", 0, 0, 0, "Disabled", 1, 0]
+    },
+    {
+      "id": 10,
+      "type": "H3PrefixDriftQAProbe",
+      "title": "10. Pre-Montage B-Roll Quality & Drift Gate",
+      "pos": [1370, 80],
+      "size": [410, 240],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "curr_images", "type": "IMAGE", "link": 11},
+        {"name": "anchor_image", "type": "IMAGE", "link": 12}
+      ],
+      "outputs": [
+        {"name": "qa_report_json", "type": "STRING", "links": []},
+        {"name": "seam_jump_score", "type": "FLOAT", "links": []},
+        {"name": "sharpness_ratio_vs_anchor", "type": "FLOAT", "links": []},
+        {"name": "color_drift_score", "type": "FLOAT", "links": []},
+        {"name": "recommend_anchor_reset", "type": "BOOLEAN", "links": []}
+      ],
+      "widgets_values": [2, 0, 3, 0.12, 0.72, 0.10]
+    },
+    {
+      "id": 11,
+      "type": "H3LongCatMVMontageStitcher",
+      "title": "11. Dual-Engine MV Timeline Stitcher (0.0ms Drift Locked to Master Song)",
+      "pos": [1370, 370],
+      "size": [470, 520],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {"name": "master_audio", "type": "AUDIO", "link": 3},
+        {"name": "aroll_images_1", "type": "IMAGE", "link": 4},
+        {"name": "broll_images_1", "type": "IMAGE", "link": 5},
+        {"name": "aroll_images_2", "type": "IMAGE", "link": 6},
+        {"name": "broll_images_2", "type": "IMAGE", "link": 7},
+        {"name": "anchor_style_image", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "mv_images", "type": "IMAGE", "links": [8]},
+        {"name": "mv_audio", "type": "AUDIO", "links": [9]},
+        {"name": "total_frames", "type": "INT", "links": []},
+        {"name": "montage_report_json", "type": "STRING", "links": []}
+      ],
+      "widgets_values": [
+        24.0,
+        1280,
+        720,
+        "cover_crop",
+        3,
+        true,
+        "[\n  {\"role\": \"aroll\", \"clip_slot\": \"aroll_1\", \"start_sec\": 0.0, \"end_sec\": 5.0, \"transition\": \"crossfade\"},\n  {\"role\": \"broll\", \"clip_slot\": \"broll_1\", \"start_sec\": 5.0, \"end_sec\": 9.5, \"transition\": \"crossfade\"},\n  {\"role\": \"aroll\", \"clip_slot\": \"aroll_2\", \"start_sec\": 9.5, \"end_sec\": 15.0, \"transition\": \"cut\"},\n  {\"role\": \"broll\", \"clip_slot\": \"broll_2\", \"start_sec\": 15.0, \"end_sec\": 19.0, \"transition\": \"crossfade\"}\n]",
+        30.0,
+        24.0,
+        0,
+        0.0,
+        4.5,
+        0.65
+      ]
+    },
+    {
+      "id": 12,
+      "type": "VHS_VideoCombine",
+      "title": "12. Export Master Solo MV (1:1 Original Speed, Zero Audio Drift)",
+      "pos": [1900, 370],
+      "size": [440, 420],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 8},
+        {"name": "audio", "type": "AUDIO", "link": 9}
+      ],
+      "outputs": [
+        {"name": "Filenames", "type": "VHS_FILENAMES", "links": []}
+      ],
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "SoloMV_Master/H3_LongCat_Final",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 16,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true
+      }
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "*"],
+    [2, 2, 0, 11, 5, "IMAGE"],
+    [3, 3, 0, 11, 0, "AUDIO"],
+    [4, 6, 0, 11, 1, "IMAGE"],
+    [5, 7, 0, 11, 2, "IMAGE"],
+    [6, 8, 0, 11, 3, "IMAGE"],
+    [7, 9, 0, 11, 4, "IMAGE"],
+    [8, 11, 0, 12, 0, "IMAGE"],
+    [9, 11, 1, 12, 1, "AUDIO"],
+    [11, 7, 0, 10, 0, "IMAGE"],
+    [12, 2, 0, 10, 1, "IMAGE"]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Master Audio + Anchor + 150-Char 4-Sentence Shot Prompts",
+      "bounding": [60, 20, 860, 1030],
+      "color": "#2b5b84"
+    },
+    {
+      "id": 2,
+      "title": "Dual-Engine Sources: LongCat Singing A-Roll (30fps) + H3 B-Roll (24fps)",
+      "bounding": [930, 20, 410, 1090],
+      "color": "#4f3b78"
+    },
+    {
+      "id": 3,
+      "title": "Drift QA + Zero-Drift Master Song Montage + Export",
+      "bounding": [1350, 20, 1020, 920],
+      "color": "#3d6b4c"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "description": "Dual-Engine Solo MV Master Workflow: LongCat-Video-Avatar 1.6 ('唱整段' A-Roll) + MiniMax-H3 PrefixStream ('拍场面' & A30 closed-lip B-Roll) sample-locked to a single 48kHz/44.1kHz master song with CIE LAB cross-engine color harmonization."
+  },
+  "version": 0.4
+}

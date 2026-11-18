@@ -1,4 +1,4 @@
-"""ComfyUI MiniMax H3 native masked AV continuation and streaming suite."""
+"""ComfyUI MiniMax H3 native masked AV continuation, anti-drift seamless stitching, 8GB VRAM kit, and Solo MV suite."""
 
 import logging
 
@@ -18,6 +18,12 @@ try:
         MiniMaxSafeVAEDecodeAudioNode,
         MiniMaxVideoChunkSlicerNode,
         MiniMaxVideoPatchReassemblerNode,
+        H3PrefixSmartSeamSelector,
+        H3PrefixColorMatchStitch,
+        H3PrefixDriftQAProbe,
+        H3FourSentencePromptNode,
+        H3VRAMStageGate8GB,
+        H3LongCatMVMontageStitcher,
         NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS,
     )
@@ -37,6 +43,12 @@ except (ImportError, ValueError):
         MiniMaxSafeVAEDecodeAudioNode,
         MiniMaxVideoChunkSlicerNode,
         MiniMaxVideoPatchReassemblerNode,
+        H3PrefixSmartSeamSelector,
+        H3PrefixColorMatchStitch,
+        H3PrefixDriftQAProbe,
+        H3FourSentencePromptNode,
+        H3VRAMStageGate8GB,
+        H3LongCatMVMontageStitcher,
         NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS,
     )
@@ -67,6 +79,12 @@ __all__ = [
     "MiniMaxSafeVAEDecodeAudioNode",
     "MiniMaxVideoChunkSlicerNode",
     "MiniMaxVideoPatchReassemblerNode",
+    "H3PrefixSmartSeamSelector",
+    "H3PrefixColorMatchStitch",
+    "H3PrefixDriftQAProbe",
+    "H3FourSentencePromptNode",
+    "H3VRAMStageGate8GB",
+    "H3LongCatMVMontageStitcher",
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
     "WEB_DIRECTORY",

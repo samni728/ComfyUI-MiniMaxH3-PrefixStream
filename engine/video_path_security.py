@@ -17,7 +17,7 @@ def validate_video_path(file_path: str) -> str:
         raise ValueError("Empty video path")
     target = os.path.realpath(file_path)
     normalized = os.path.normcase(target)
-    if not normalized.endswith(VIDEO_EXTENSIONS):
+    if not normalized.lower().endswith(VIDEO_EXTENSIONS):
         raise ValueError("Unsupported video extension")
     for directory in (folder_paths.get_input_directory(), folder_paths.get_output_directory()):
         root = os.path.normcase(os.path.realpath(directory))

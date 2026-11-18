@@ -60,8 +60,10 @@ class TestVideoPathSecurity(unittest.TestCase):
         target = self.output / "clip.mp4"
         target.touch()
         commonpath = os.path.commonpath
-        with patch("engine.video_path_security.os.path.commonpath", side_effect=[ValueError("different drives"), os.path.normcase(commonpath([str(self.output), str(target)]))]):
-            self.assertEqual(validate_video_path(str(target)), os.path.realpath(target))
+        real_output = os.path.realpath(self.output)
+        real_target = os.path.realpath(target)
+        with patch("engine.video_path_security.os.path.commonpath", side_effect=[ValueError("different drives"), os.path.normcase(commonpath([real_output, real_target]))]):
+            self.assertEqual(validate_video_path(str(target)), real_target)
 
     def test_symlink_escape(self):
         link = self.input / "linked.mp4"

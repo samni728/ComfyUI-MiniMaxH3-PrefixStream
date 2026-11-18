@@ -83,6 +83,25 @@
 | **`MiniMax H3 Clip Bin Picker`** | `MiniMaxH3/PrefixStream` | 以画廊方式查找已保存的片段（支持卡片流与树形图谱一键切换），并输出其 latent、尾帧、提示词和 ID。 |
 | **`MiniMax H3 Clip Bin Tree Picker`** | `MiniMaxH3/ClipBin` | 以 DAG 分支血缘拓扑树（Tree View）全景可视化历史片段、多分支探索版本与完整故事线祖先链路。 |
 | **`MiniMax Cache Telemetry Monitor`**| `MiniMaxH3/PrefixStream` | 显示当前续写模式、受保护上下文几何信息和会话进度。 |
+| **`✂️ H3 Prefix Smart Seam Selector`** | `MiniMaxH3/SeamlessStitch` | 智能最小跳变寻缝节点：在重叠窗口内自动评估像素差、明度差、Sobel 边缘连续性与运动速度连续性，自动避开第 0/39 帧盲切跳变点，且 `max_phase_shift=0` 时 **100% 锁死音画总帧数与时长**。 |
+| **`🎨 H3 Prefix LAB Color-Match & Flow Stitcher`** | `MiniMaxH3/SeamlessStitch` | 无痕色彩与光流微融合缝合器：在感知均匀的 **CIE L\*a\*b\*** 空间对齐前后镜头的曝光与冷暖色温，支持向首镜定妆图拉回色准（防多段累积偏色）+ **纯 PyTorch 多尺度光流双向对齐微融合 (`optical_flow_warp`, 2~6 帧)** + 跨采样率零爆音余弦音频交叉淡化。 |
+| **`🔬 H3 Prefix Drift & Seam QA Probe`** | `MiniMaxH3/QA` | 长链劣化与接缝熔断探针：在图内实时输出 `seam_jump_score`、`sharpness_ratio_vs_anchor`、`color_drift_score` 与 `recommend_anchor_reset` 布尔熔断信号（默认每满 `<=3` 段微链自动提示重置关键帧锚点，根治 13 段长链崩坏）。 |
+| **`✍️ H3 150-Char 4-Sentence Prompt Compiler`** | `MiniMaxH3/Prompt` | 91% 指令服从度四句结构编译器 + 矛盾指令防火墙：严格执行「主体锚点≤30字 + 具体可拍微动作 + 景别/运镜/光线三选二 + 风格质感收尾」，支持设定与指令分离（Bible ID 引用）、A30 闭唇倾听防张嘴守护、负面约束 ≤2 条裁剪，自动拦截“逆光剪影+面部清晰”等互杀指令。 |
+| **`🛡️ H3 RTX 4060 Ti 8GB VRAM Stage-Gate Cleaner`** | `MiniMaxH3/VRAM_8GB` | 8GB 显卡跨阶段显存清道夫：在 Seed-VC → FLUX 关键帧 → Qwen3-VL → H3 采样 → Tiled VAE 之间强制执行 `unload_all_models()` + `soft_empty_cache()` + `gc.collect()` 并把透传张量移至系统内存，实测确保 `8188 MiB` 4060 Ti 全程零 OOM。 |
+| **`🎵 H3 × LongCat Dual-Engine MV Montage Stitcher`** | `MiniMaxH3/MV_Studio` | 「LongCat 唱整段 (A-Roll) + H3 拍场面 (B-Roll)」双引擎 MV 零漂移混剪器：自动将 30fps LongCat 与 24fps H3 统一帧率、无黑边画幅与 CIE LAB 色温，全程直接锁死唯一权威 `48kHz / 44.1kHz` 主歌曲 `AUDIO` 母带，3 分钟 MV 音画漂移恒为 **`0.0 ms`**。 |
+
+---
+
+## RTX 4060 Ti (8GB VRAM) 推荐参数与双引擎 MV 流程
+
+基于 Windows 11 实机 `stone-winpc`（RTX 4060 Ti 8188 MiB WDDM）实测调优：
+
+- **启动参数**：`python main.py --listen 0.0.0.0 --port 8188 --reserve-vram 0.5 --lowvram`
+- **推荐权重组合**：`minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors` + `qwen3-vl-4b-heretic_int8_dynamic_convrot.safetensors` + `minimax_h3_video_vae_int8_convrot.safetensors`
+- **8GB 安全草稿规格**：`608×352`（或 `752×416`），`124` 帧（5.17s），`4` 步采样（实测单段 `~45.6s`，峰值显存 `7343~7373 MiB`）。
+- **跨阶段防爆显存铁律**：文本编码后、采样器后务必接入 **`H3VRAMStageGate8GB`**，并使用 **`VAEDecodeTiled`** 分块解码。
+- **长视频防劣化铁律**：单条 PrefixStream 连续接力控制在 **`<= 3 段` 微链（约 12~15 秒）**，由 `H3PrefixDriftQAProbe` 监控并在第 3 段后切回全新的 FLUX 关键帧锚点；主唱整段对口型交给 Stage-2 云端 **Colab NVMe + `LongCat-Video-Avatar 1.6`**，最后由 **`H3LongCatMVMontageStitcher`** 锁死主音轨合成成片。
+- 详见完整架构手册：[`docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md`](docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md)
 
 ---
 
@@ -101,7 +120,7 @@ Continuation Config 的 `audio_continuation_mode` 默认为 `Masked Prefix`，�
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/knoic/ComfyUI-MiniMaxH3-PrefixStream.git
+git clone https://github.com/samni728/ComfyUI-MiniMaxH3-PrefixStream.git
 cd ComfyUI-MiniMaxH3-PrefixStream
 pip install -r requirements.txt
 ```
@@ -127,6 +146,11 @@ node tests/test_clip_bin_frontend.cjs
 
 ## 示例工作流与文档
 
+- 📄 **RTX 4060 Ti (8GB) 三段微链无痕续写工作流**：[`examples/MiniMaxH3_4060Ti_8GB_3Seg_PrefixStream_MicroChain.json`](examples/MiniMaxH3_4060Ti_8GB_3Seg_PrefixStream_MicroChain.json)
+  - 专为 8GB 显存打造的完整闭环：150 字四句编译器 → 跨阶段显存清道夫 → 4 步 INT8 采样 → Tiled VAE → 长链劣化探针 → LAB 光流无痕缝合。
+- 📄 **H3 × LongCat 双引擎个人 MV 零漂移母带工作流**：[`examples/H3_LongCat_DualEngine_SoloMV_Master_Template.json`](examples/H3_LongCat_DualEngine_SoloMV_Master_Template.json)
+  - 「LongCat 唱整段 A-Roll + H3 拍场面/A30 闭唇倾听 B-Roll」双轨统一调色、帧率对齐并锁死 48kHz/44.1kHz 主歌曲母带（0.0ms 漂移）。
+- 📖 **RTX 4060 Ti 8GB 生存指南与双引擎 MV 工业化手册**：[`docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md`](docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md)
 - 📄 **长视频切片与自动缝合工作流**：[`examples/MiniMaxH3_LongVideo_Slicer_Reassembler_Template.json`](examples/MiniMaxH3_LongVideo_Slicer_Reassembler_Template.json)
   - 专为长视频重绘与连续接力打造的轻量工作流，包含智能切片器、上一段参考帧连线、VHS 规格读取与自动回填缝合。
 - 📄 **PrefixStream 连续生成工作流**：[`examples/MiniMaxH3_PrefixStream_v1.0.json`](examples/MiniMaxH3_PrefixStream_v1.0.json)

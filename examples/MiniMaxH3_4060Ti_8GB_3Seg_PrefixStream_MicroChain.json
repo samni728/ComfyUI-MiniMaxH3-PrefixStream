@@ -1,0 +1,557 @@
+{
+  "id": "b4060ti8-3seg-prefix-microchain-v2",
+  "revision": 2,
+  "last_node_id": 24,
+  "last_link_id": 34,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "H3FourSentencePromptNode",
+      "title": "1. H3 150-Char 4-Sentence Prompt Compiler (91% Obedience)",
+      "pos": [80, 120],
+      "size": [430, 390],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "compiled_prompt", "type": "STRING", "links": [1, 28]},
+        {"name": "negative_prompt", "type": "STRING", "links": []},
+        {"name": "estimated_obedience", "type": "INT", "links": []},
+        {"name": "has_contradiction", "type": "BOOLEAN", "links": []},
+        {"name": "diagnostics_json", "type": "STRING", "links": []}
+      ],
+      "widgets_values": [
+        "mv_broll",
+        "穿深青布衫的青年男子，短黑发",
+        "古村石桥边缓步驻足，指尖轻抚桥栏，身后红柿满枝随秋风轻晃",
+        "近景",
+        "Dolly in 缓慢推近",
+        "暖秋侧逆光",
+        "80年代胶片颗粒，柔和浅景深，情绪克制",
+        "auto_resolve",
+        "",
+        "",
+        "",
+        "",
+        "字幕，水印",
+        0.0,
+        "<Picture 1>",
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "title": "2. Anchor Keyframe (FLUX.3 Klein INT8 Approved Frame)",
+      "pos": [80, 560],
+      "size": [320, 314],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2, 22, 25]},
+        {"name": "MASK", "type": "MASK", "links": []}
+      ],
+      "widgets_values": ["anchor_keyframe_shot01.png", "image"]
+    },
+    {
+      "id": 3,
+      "type": "CLIPLoader",
+      "title": "3. Qwen3-VL-4B INT8 Text Encoder (4.84GB)",
+      "pos": [560, 120],
+      "size": [380, 106],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CLIP", "type": "CLIP", "links": [3]}
+      ],
+      "widgets_values": ["qwen3-vl-4b-heretic_int8_dynamic_convrot.safetensors", "krea2", "default"]
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "title": "4. H3 Video VAE INT8 (3.17GB)",
+      "pos": [560, 260],
+      "size": [380, 60],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "VAE", "type": "VAE", "links": [4, 15, 19]}
+      ],
+      "widgets_values": ["minimax_h3_video_vae_int8_convrot.safetensors"]
+    },
+    {
+      "id": 5,
+      "type": "VAELoader",
+      "title": "5. H3 Audio VAE FP32 (605MB)",
+      "pos": [560, 350],
+      "size": [380, 60],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "VAE", "type": "VAE", "links": [5, 16, 20]}
+      ],
+      "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"]
+    },
+    {
+      "id": 6,
+      "type": "MiniMaxH3ReferenceToVideo",
+      "title": "6. H3 Ref2VA Draft 608x352 @ 124f (~5.17s, 4060Ti Safe)",
+      "pos": [990, 120],
+      "size": [400, 310],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 3},
+        {"name": "vae", "type": "VAE", "link": 4},
+        {"name": "audio_vae", "type": "VAE", "link": 5},
+        {"name": "ref_images.ref_image_0", "type": "IMAGE", "link": 2},
+        {"name": "prompt", "type": "STRING", "link": 1}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [6]},
+        {"name": "LATENT", "type": "LATENT", "links": [7]}
+      ],
+      "widgets_values": ["", 608, 352, 124, "max"]
+    },
+    {
+      "id": 7,
+      "type": "H3VRAMStageGate8GB",
+      "title": "7. VRAM Gate #1: Evict Qwen3-VL Before Loading 20GB H3 DiT",
+      "pos": [1430, 120],
+      "size": [410, 210],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "passthrough", "type": "*", "link": 6},
+        {"name": "wait_for", "type": "*", "link": 7}
+      ],
+      "outputs": [
+        {"name": "passthrough_out", "type": "*", "links": [8]},
+        {"name": "vram_report_json", "type": "STRING", "links": []},
+        {"name": "free_vram_mb", "type": "FLOAT", "links": []}
+      ],
+      "widgets_values": [
+        "Post-Qwen3VL -> Pre-H3-DiT (8GB Evict)",
+        true,
+        true,
+        true,
+        8188,
+        true
+      ]
+    },
+    {
+      "id": 8,
+      "type": "MiniMaxPrefixCacheConfig",
+      "title": "8. PrefixStream Config (39f / 65 Audio Ticks Exact Sync)",
+      "pos": [990, 490],
+      "size": [380, 220],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "cache_config", "type": "MINIMAX_CACHE_CONFIG", "links": [9, 26]}
+      ],
+      "widgets_values": [
+        "Native Masked AV (Recommended)",
+        "39",
+        "Match Video Handover",
+        0,
+        0.0,
+        false,
+        "Masked Prefix"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "MiniMaxClipBinPicker",
+      "title": "9. Clip Bin Picker (Micro-Chain <=3 Segments)",
+      "pos": [560, 490],
+      "size": [400, 310],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "latent", "type": "LATENT", "links": [10, 17, 18]},
+        {"name": "tail_frame", "type": "IMAGE", "links": []},
+        {"name": "first_frame", "type": "IMAGE", "links": []},
+        {"name": "prompt", "type": "STRING", "links": []},
+        {"name": "clip_id", "type": "STRING", "links": [29]}
+      ],
+      "widgets_values": [
+        "MV_MicroChain_01",
+        "Auto (首段全新 / 后续自动接力)",
+        "⭐⭐⭐⭐+ (4+ ⭐)",
+        "latest",
+        "",
+        "Tree (关系树)"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "UNETLoader",
+      "title": "10. MiniMax H3 Fused Turbo8 INT8 ConvRot",
+      "pos": [1430, 380],
+      "size": [410, 82],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [11]}
+      ],
+      "widgets_values": [
+        "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "MiniMaxPrefixCacheApplier",
+      "title": "11. Native Masked AV Prefix Applier",
+      "pos": [1890, 160],
+      "size": [390, 260],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 11},
+        {"name": "conditioning", "type": "CONDITIONING", "link": 8},
+        {"name": "cache_config", "type": "MINIMAX_CACHE_CONFIG", "link": 9},
+        {"name": "context_latent", "type": "LATENT", "link": 10},
+        {"name": "target_latent", "type": "LATENT", "link": 7}
+      ],
+      "outputs": [
+        {"name": "model", "type": "MODEL", "links": [12, 13]},
+        {"name": "conditioning", "type": "CONDITIONING", "links": [14]},
+        {"name": "session", "type": "MINIMAX_SESSION", "links": [27]},
+        {"name": "masked_latent", "type": "LATENT", "links": [30]}
+      ]
+    },
+    {
+      "id": 12,
+      "type": "BasicGuider",
+      "pos": [2330, 140],
+      "size": [220, 60],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 12},
+        {"name": "conditioning", "type": "CONDITIONING", "link": 14}
+      ],
+      "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [31]}]
+    },
+    {
+      "id": 13,
+      "type": "BasicScheduler",
+      "title": "13. 4-Step Turbo Schedule (45.6s on 4060Ti)",
+      "pos": [2330, 240],
+      "size": [240, 106],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [{"name": "model", "type": "MODEL", "link": 13}],
+      "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [32]}],
+      "widgets_values": ["simple", 4, 1.0]
+    },
+    {
+      "id": 14,
+      "type": "KSamplerSelect",
+      "pos": [2330, 380],
+      "size": [240, 58],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [33]}],
+      "widgets_values": ["euler"]
+    },
+    {
+      "id": 15,
+      "type": "RandomNoise",
+      "pos": [2330, 470],
+      "size": [240, 82],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "NOISE", "type": "NOISE", "links": [34]}],
+      "widgets_values": [20261118, "increment"]
+    },
+    {
+      "id": 16,
+      "type": "SamplerCustomAdvanced",
+      "pos": [2620, 160],
+      "size": [240, 320],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {"name": "noise", "type": "NOISE", "link": 34},
+        {"name": "guider", "type": "GUIDER", "link": 31},
+        {"name": "sampler", "type": "SAMPLER", "link": 33},
+        {"name": "sigmas", "type": "SIGMAS", "link": 32},
+        {"name": "latent_image", "type": "LATENT", "link": 30}
+      ],
+      "outputs": [
+        {"name": "output", "type": "LATENT", "links": [21]},
+        {"name": "denoised_output", "type": "LATENT", "links": []}
+      ]
+    },
+    {
+      "id": 17,
+      "type": "H3VRAMStageGate8GB",
+      "title": "17. VRAM Gate #2: Evict 20GB H3 DiT Before Tiled VAE Decode!",
+      "pos": [2910, 160],
+      "size": [420, 210],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {"name": "passthrough", "type": "*", "link": 21}
+      ],
+      "outputs": [
+        {"name": "passthrough_out", "type": "*", "links": [23, 24]},
+        {"name": "vram_report_json", "type": "STRING", "links": []},
+        {"name": "free_vram_mb", "type": "FLOAT", "links": []}
+      ],
+      "widgets_values": [
+        "Post-Sampler -> Pre-TiledVAE (8GB Evict)",
+        true,
+        true,
+        true,
+        8188,
+        true
+      ]
+    },
+    {
+      "id": 18,
+      "type": "VAEDecodeTiled",
+      "title": "18. Tiled Video VAE Decode (Zero OOM on 8GB 4060Ti)",
+      "pos": [3380, 140],
+      "size": [320, 150],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 23},
+        {"name": "vae", "type": "VAE", "link": 15}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [101, 102]}],
+      "widgets_values": [256, 64, 32, 8]
+    },
+    {
+      "id": 19,
+      "type": "MiniMaxSafeVAEDecodeAudio",
+      "title": "19. Safe Audio VAE Decode (Current Segment)",
+      "pos": [3380, 330],
+      "size": [320, 80],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {"name": "vae", "type": "VAE", "link": 16},
+        {"name": "samples", "type": "LATENT", "link": 24}
+      ],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [103, 104]}]
+    },
+    {
+      "id": 20,
+      "type": "MiniMaxSafeVAEDecode",
+      "title": "20. Safe Video VAE Decode (Previous Context)",
+      "pos": [3380, 450],
+      "size": [320, 80],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {"name": "vae", "type": "VAE", "link": 19},
+        {"name": "samples", "type": "LATENT", "link": 17}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [105, 106]}]
+    },
+    {
+      "id": 21,
+      "type": "MiniMaxSafeVAEDecodeAudio",
+      "title": "21. Safe Audio VAE Decode (Previous Context)",
+      "pos": [3380, 560],
+      "size": [320, 80],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {"name": "vae", "type": "VAE", "link": 20},
+        {"name": "samples", "type": "LATENT", "link": 18}
+      ],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [107]}]
+    },
+    {
+      "id": 22,
+      "type": "H3PrefixDriftQAProbe",
+      "title": "22. Segment Drift & Seam QA Probe (Max 3-Seg Circuit Breaker)",
+      "pos": [3760, 120],
+      "size": [420, 260],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {"name": "curr_images", "type": "IMAGE", "link": 101},
+        {"name": "prev_images", "type": "IMAGE", "link": 105},
+        {"name": "anchor_image", "type": "IMAGE", "link": 22},
+        {"name": "curr_audio", "type": "AUDIO", "link": 103}
+      ],
+      "outputs": [
+        {"name": "qa_report_json", "type": "STRING", "links": []},
+        {"name": "seam_jump_score", "type": "FLOAT", "links": []},
+        {"name": "sharpness_ratio_vs_anchor", "type": "FLOAT", "links": []},
+        {"name": "color_drift_score", "type": "FLOAT", "links": []},
+        {"name": "recommend_anchor_reset", "type": "BOOLEAN", "links": []}
+      ],
+      "widgets_values": [1, 39, 3, 0.12, 0.72, 0.10]
+    },
+    {
+      "id": 23,
+      "type": "H3PrefixColorMatchStitch",
+      "title": "23. Smart Seam + CIE LAB Color Match + Optical Flow Stitch",
+      "pos": [3760, 430],
+      "size": [440, 380],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {"name": "curr_images", "type": "IMAGE", "link": 102},
+        {"name": "prev_images", "type": "IMAGE", "link": 106},
+        {"name": "anchor_image", "type": "IMAGE", "link": 25},
+        {"name": "prev_audio", "type": "AUDIO", "link": 107},
+        {"name": "curr_audio", "type": "AUDIO", "link": 104},
+        {"name": "session", "type": "MINIMAX_SESSION", "link": 27},
+        {"name": "cache_config", "type": "MINIMAX_CACHE_CONFIG", "link": 26}
+      ],
+      "outputs": [
+        {"name": "stitched_images", "type": "IMAGE", "links": [108]},
+        {"name": "stitched_audio", "type": "AUDIO", "links": [109]},
+        {"name": "total_frames", "type": "INT", "links": []},
+        {"name": "stitch_diagnostics_json", "type": "STRING", "links": []}
+      ],
+      "widgets_values": [
+        0,
+        true,
+        "lab_mean_std",
+        0.85,
+        0.25,
+        0,
+        "optical_flow_warp",
+        4,
+        20.0,
+        24.0,
+        12
+      ]
+    },
+    {
+      "id": 24,
+      "type": "MiniMaxClipBinSaver",
+      "title": "24. Archive Verified Segment to Clip Bin",
+      "pos": [4260, 430],
+      "size": [380, 320],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {"name": "latent", "type": "LATENT", "link": 24},
+        {"name": "images", "type": "IMAGE", "link": 108},
+        {"name": "audio", "type": "AUDIO", "link": 109},
+        {"name": "prompt", "type": "STRING", "link": 28},
+        {"name": "parent_clip_id", "type": "STRING", "link": 29}
+      ],
+      "outputs": [
+        {"name": "clip_id", "type": "STRING", "links": []},
+        {"name": "preview_image", "type": "IMAGE", "links": []},
+        {"name": "bin_path", "type": "STRING", "links": []}
+      ],
+      "widgets_values": ["MV_MicroChain_01", "Auto (自动编号)", 4, "", "", "", true]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 6, 4, "STRING"],
+    [2, 2, 0, 6, 3, "IMAGE"],
+    [3, 3, 0, 6, 0, "CLIP"],
+    [4, 4, 0, 6, 1, "VAE"],
+    [5, 5, 0, 6, 2, "VAE"],
+    [6, 6, 0, 7, 0, "*"],
+    [7, 6, 1, 11, 4, "LATENT"],
+    [8, 7, 0, 11, 1, "CONDITIONING"],
+    [9, 8, 0, 11, 2, "MINIMAX_CACHE_CONFIG"],
+    [10, 9, 0, 11, 3, "LATENT"],
+    [11, 10, 0, 11, 0, "MODEL"],
+    [12, 11, 0, 12, 0, "MODEL"],
+    [13, 11, 0, 13, 0, "MODEL"],
+    [14, 11, 1, 12, 1, "CONDITIONING"],
+    [15, 4, 0, 18, 1, "VAE"],
+    [16, 5, 0, 19, 0, "VAE"],
+    [17, 9, 0, 20, 1, "LATENT"],
+    [18, 9, 0, 21, 1, "LATENT"],
+    [19, 4, 0, 20, 0, "VAE"],
+    [20, 5, 0, 21, 0, "VAE"],
+    [21, 16, 0, 17, 0, "*"],
+    [22, 2, 0, 22, 2, "IMAGE"],
+    [23, 17, 0, 18, 0, "LATENT"],
+    [24, 17, 0, 19, 1, "LATENT"],
+    [25, 2, 0, 23, 2, "IMAGE"],
+    [26, 8, 0, 23, 6, "MINIMAX_CACHE_CONFIG"],
+    [27, 11, 2, 23, 5, "MINIMAX_SESSION"],
+    [28, 1, 0, 24, 3, "STRING"],
+    [29, 9, 4, 24, 4, "STRING"],
+    [30, 11, 3, 16, 4, "LATENT"],
+    [31, 12, 0, 16, 1, "GUIDER"],
+    [32, 13, 0, 16, 3, "SIGMAS"],
+    [33, 14, 0, 16, 2, "SAMPLER"],
+    [34, 15, 0, 16, 0, "NOISE"],
+    [101, 18, 0, 22, 0, "IMAGE"],
+    [102, 18, 0, 23, 0, "IMAGE"],
+    [103, 19, 0, 22, 3, "AUDIO"],
+    [104, 19, 0, 23, 4, "AUDIO"],
+    [105, 20, 0, 22, 1, "IMAGE"],
+    [106, 20, 0, 23, 1, "IMAGE"],
+    [107, 21, 0, 23, 3, "AUDIO"],
+    [108, 23, 0, 24, 1, "IMAGE"],
+    [109, 23, 1, 24, 2, "AUDIO"]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Stage A: 150-Char Prompt + Qwen3-VL Conditioning -> VRAM Evict",
+      "bounding": [60, 60, 1800, 840],
+      "color": "#2b5b84"
+    },
+    {
+      "id": 2,
+      "title": "Stage B: H3 Turbo8 INT8 4-Step Sampling -> VRAM Evict -> Tiled VAE",
+      "bounding": [1870, 60, 1860, 760],
+      "color": "#3d6b4c"
+    },
+    {
+      "id": 3,
+      "title": "Stage C: Drift QA Circuit Breaker (<=3 Segs) + LAB Optical-Flow Stitch",
+      "bounding": [3740, 60, 940, 780],
+      "color": "#7a4b2a"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "description": "RTX 4060 Ti 8GB (stone-winpc) validated <=3-segment H3 PrefixStream micro-chain workflow with sequential VRAM eviction, Tiled VAE, LAB color match, optical-flow micro-crossfade, and drift QA circuit breaker."
+  },
+  "version": 0.4
+}

@@ -75,6 +75,17 @@ try:
         resolve_video_path,
         standardize_audio_dict,
     )
+    from .pipeline.smart_seam_color_stitch import (
+        find_optimal_seam_cut,
+        smart_select_seam_and_trim,
+        apply_lab_color_match,
+        color_match_and_stitch_segments,
+        zero_click_audio_stitch,
+    )
+    from .engine.drift_qa_probe import evaluate_prefix_drift_qa
+    from .engine.prompt_compiler import compile_h3_four_sentence_prompt, lint_h3_contradictions
+    from .engine.vram_stage_gate import run_vram_stage_gate
+    from .pipeline.mv_montage_stitcher import stitch_dual_engine_mv_montage
 except (ImportError, ValueError):
     from engine.continuation_state import encode_state, decode_state, prepare_identity_references, ANCHOR_KEY
     from engine.cache_manager import (
@@ -122,6 +133,17 @@ except (ImportError, ValueError):
         resolve_video_path,
         standardize_audio_dict,
     )
+    from pipeline.smart_seam_color_stitch import (
+        find_optimal_seam_cut,
+        smart_select_seam_and_trim,
+        apply_lab_color_match,
+        color_match_and_stitch_segments,
+        zero_click_audio_stitch,
+    )
+    from engine.drift_qa_probe import evaluate_prefix_drift_qa
+    from engine.prompt_compiler import compile_h3_four_sentence_prompt, lint_h3_contradictions
+    from engine.vram_stage_gate import run_vram_stage_gate
+    from pipeline.mv_montage_stitcher import stitch_dual_engine_mv_montage
 
 
 class AnyType(str):
@@ -717,6 +739,10 @@ class MiniMaxLongVideoStitcherNode:
                 "curr_audio": ("AUDIO", {"tooltip": "当前生成的音频流 (来自 VAEDecodeAudio 或 TrimPrefix)"}),
                 "session": ("MINIMAX_SESSION",),
                 "cache_config": ("MINIMAX_CACHE_CONFIG",),
+                "smart_seam_search": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "可选：在重叠窗口内自动搜索像素/亮度/运动最平顺的最佳切点，替代固定第0帧盲切"
+                }),
             }
         }
 
@@ -739,6 +765,7 @@ class MiniMaxLongVideoStitcherNode:
         curr_audio: Optional[Dict[str, Any]] = None,
         session: Optional[LongVideoSession] = None,
         cache_config: Optional[KVCacheConfig] = None,
+        smart_seam_search: bool = False,
         **kwargs
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, Any]], int]:
         # Determine trim frames for curr_images/audio
@@ -754,6 +781,24 @@ class MiniMaxLongVideoStitcherNode:
                 actual_trim_frames = session.last_rolling_frames
             elif cache_config is not None and prev_images is not None and prev_images.shape[0] > 0:
                 actual_trim_frames = cache_config.rolling_frames
+
+        if smart_seam_search and actual_trim_frames > 1:
+            out_images, out_audio, _ = color_match_and_stitch_segments(
+                prev_images=prev_images,
+                curr_images=curr_images,
+                overlap_frames=actual_trim_frames,
+                smart_seam=True,
+                color_match_mode="luma_only" if luminance_match else "none",
+                grade_decay_frames=luminance_fade_frames,
+                blend_mode="cosine_alpha" if crossfade_frames > 0 else "hard_cut",
+                blend_frames=crossfade_frames,
+                prev_audio=prev_audio,
+                curr_audio=curr_audio,
+                audio_crossfade_ms=crossfade_ms,
+                fps=fps,
+            )
+            total_f = int(out_images.shape[0]) if out_images is not None else 0
+            return (out_images, out_audio, total_f)
 
         # Standardize inputs
         prev_img_std = _standardize_image_tensor(prev_images)
@@ -1728,6 +1773,644 @@ class MiniMaxVideoPatchReassemblerNode:
         return (out_imgs, out_aud, is_all_done, status_text)
 
 
+# ===========================================================================
+# Upgrade 1 — Seamless PrefixStream Video Stitching & Anti-Drift QA Nodes
+# ===========================================================================
+
+class H3PrefixSmartSeamSelector:
+    """Searches within the PrefixStream overlap window for the minimal-discontinuity frame cut.
+
+    Instead of blindly cutting at exact frame 0 / trim_frames (where H3 unmasked denoising starts),
+    evaluates pixel, luminance, Sobel edge, and motion-velocity continuity across candidate overlap
+    frames while strictly preserving total AV duration when max_phase_shift == 0.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "curr_images": ("IMAGE", {"tooltip": "当前续写生成的完整画面（裁切前）"}),
+                "overlap_frames": ("INT", {
+                    "default": 39, "min": 0, "max": 192, "step": 1,
+                    "tooltip": "重叠前缀帧数（如 39 或 22）。设为 0 且连接 session/cache_config 时自动识别"
+                }),
+                "search_radius": ("INT", {
+                    "default": 12, "min": 0, "max": 64, "step": 1,
+                    "tooltip": "在重叠窗口内向回搜索最佳切点的帧半径"
+                }),
+                "max_phase_shift": ("INT", {
+                    "default": 0, "min": 0, "max": 6, "step": 1,
+                    "tooltip": "允许的微相位偏移帧数。0 = 严格锁死音画总时长（MV/对口型必选 0）；>0 适合纯空镜运动对齐"
+                }),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0}),
+            },
+            "optional": {
+                "prev_images": ("IMAGE", {"tooltip": "上一段累积画面（首段留空时直接原样透传）"}),
+                "prev_audio": ("AUDIO", {"tooltip": "上一段累积音频（同步对齐裁切点）"}),
+                "curr_audio": ("AUDIO", {"tooltip": "当前段完整音频（同步对齐裁切点并保留交叉淡化上下文）"}),
+                "session": ("MINIMAX_SESSION",),
+                "cache_config": ("MINIMAX_CACHE_CONFIG",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "AUDIO", "AUDIO", "INT", "FLOAT", "STRING")
+    RETURN_NAMES = (
+        "aligned_prev_images",
+        "trimmed_curr_images",
+        "aligned_prev_audio",
+        "trimmed_curr_audio",
+        "best_cut_offset",
+        "seam_cost",
+        "seam_report_json",
+    )
+    FUNCTION = "select_seam"
+    CATEGORY = "MiniMaxH3/SeamlessStitch"
+
+    def select_seam(
+        self,
+        curr_images: torch.Tensor,
+        overlap_frames: int = 39,
+        search_radius: int = 12,
+        max_phase_shift: int = 0,
+        fps: float = 24.0,
+        prev_images: Optional[torch.Tensor] = None,
+        prev_audio: Optional[Dict[str, Any]] = None,
+        curr_audio: Optional[Dict[str, Any]] = None,
+        session: Optional[LongVideoSession] = None,
+        cache_config: Optional[KVCacheConfig] = None,
+    ):
+        actual_ov = int(overlap_frames)
+        if actual_ov <= 0:
+            if session is not None and getattr(session, "is_current_clip_trimmed", False):
+                actual_ov = 0
+            elif session is not None:
+                actual_ov = int(session.last_rolling_frames)
+            elif cache_config is not None and prev_images is not None and prev_images.shape[0] > 0:
+                actual_ov = int(cache_config.rolling_frames)
+
+        aligned_prev, trimmed_curr, aligned_prev_aud, trimmed_curr_aud, report = smart_select_seam_and_trim(
+            prev_images=prev_images,
+            curr_images=curr_images,
+            overlap_frames=actual_ov,
+            search_radius=search_radius,
+            max_phase_shift=max_phase_shift,
+            prev_audio=prev_audio,
+            curr_audio=curr_audio,
+            fps=fps,
+        )
+        if session is not None and report.get("curr_trim_frames", 0) > 0:
+            session.is_current_clip_trimmed = True
+
+        if aligned_prev is None:
+            aligned_prev = torch.empty((0, curr_images.shape[1], curr_images.shape[2], 3), dtype=curr_images.dtype, device=curr_images.device)
+
+        return (
+            aligned_prev,
+            trimmed_curr,
+            aligned_prev_aud,
+            trimmed_curr_aud,
+            int(report.get("curr_trim_frames", 0)),
+            float(report.get("seam_cost", 0.0)),
+            json.dumps(report, ensure_ascii=False, indent=2),
+        )
+
+
+class H3PrefixColorMatchStitch:
+    """Eliminates subtle exposure/tint jumps across stitched H3 segments via CIE LAB transfer + micro-blend.
+
+    Combines:
+    1. Optional Smart Seam Selection inside the overlap window.
+    2. CIE L*a*b* mean/std luma + chroma transfer across the overlap zone, plus optional Shot-1 anchor pull
+       so multi-segment chains never accumulate warm/cool/contrast drift.
+    3. 2–6 frame Optical-Flow Warp Blend or Cosine S-Curve Alpha Blend.
+    4. Zero-click DC-balanced cosine audio crossfade with automatic sample-rate harmonization.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "curr_images": ("IMAGE", {"tooltip": "当前新生成的片段画面"}),
+                "overlap_frames": ("INT", {
+                    "default": 0, "min": 0, "max": 192, "step": 1,
+                    "tooltip": "重叠前缀帧数。设为 0 且连接了 session/cache_config 时自动读取（如 39 帧）"
+                }),
+                "smart_seam": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "自动在重叠区内挑选像素/运动最平顺的接缝帧对"
+                }),
+                "color_match_mode": (["lab_mean_std", "luma_only", "none"], {
+                    "default": "lab_mean_std",
+                    "tooltip": "lab_mean_std 同时消除明暗曝光跳变与冷暖色温漂移；luma_only 仅匹配明度"
+                }),
+                "color_match_strength": ("FLOAT", {
+                    "default": 0.85, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "LAB 色彩/明度迁移强度"
+                }),
+                "anchor_pull_strength": ("FLOAT", {
+                    "default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "若连接了 anchor_image（定妆/首镜基准图），将色彩统计向首镜拉回的比例，防止多段累积偏色"
+                }),
+                "grade_decay_frames": ("INT", {
+                    "default": 0, "min": 0, "max": 120, "step": 1,
+                    "tooltip": "0 = 整段保持色准锁定（推荐，防中段反弹偏色）；>0 = 在指定帧数内平滑衰减回原片色彩"
+                }),
+                "blend_mode": (["cosine_alpha", "optical_flow_warp", "hard_cut"], {
+                    "default": "cosine_alpha",
+                    "tooltip": "optical_flow_warp 使用纯 PyTorch 光流双向对齐融合（防运动重影）；cosine_alpha 为余弦平滑混合"
+                }),
+                "blend_frames": ("INT", {
+                    "default": 4, "min": 0, "max": 16, "step": 1,
+                    "tooltip": "接缝微融合帧数（推荐 2~6 帧）"
+                }),
+                "audio_crossfade_ms": ("FLOAT", {
+                    "default": 20.0, "min": 0.0, "max": 500.0, "step": 1.0,
+                    "tooltip": "零爆音余弦音频交叉淡化窗口（毫秒）"
+                }),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0}),
+            },
+            "optional": {
+                "prev_images": ("IMAGE", {"tooltip": "前序已拼接画面（首段留空）"}),
+                "anchor_image": ("IMAGE", {"tooltip": "可选：首镜定妆/场景锚点图，用于抑制多段累积色偏"}),
+                "prev_audio": ("AUDIO", {"tooltip": "前序已拼接音频（首段留空）"}),
+                "curr_audio": ("AUDIO", {"tooltip": "当前段音频"}),
+                "session": ("MINIMAX_SESSION",),
+                "cache_config": ("MINIMAX_CACHE_CONFIG",),
+                "search_radius": ("INT", {"default": 12, "min": 0, "max": 64, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING")
+    RETURN_NAMES = ("stitched_images", "stitched_audio", "total_frames", "stitch_diagnostics_json")
+    FUNCTION = "stitch"
+    CATEGORY = "MiniMaxH3/SeamlessStitch"
+
+    def stitch(
+        self,
+        curr_images: torch.Tensor,
+        overlap_frames: int = 0,
+        smart_seam: bool = True,
+        color_match_mode: str = "lab_mean_std",
+        color_match_strength: float = 0.85,
+        anchor_pull_strength: float = 0.25,
+        grade_decay_frames: int = 0,
+        blend_mode: str = "cosine_alpha",
+        blend_frames: int = 4,
+        audio_crossfade_ms: float = 20.0,
+        fps: float = 24.0,
+        prev_images: Optional[torch.Tensor] = None,
+        anchor_image: Optional[torch.Tensor] = None,
+        prev_audio: Optional[Dict[str, Any]] = None,
+        curr_audio: Optional[Dict[str, Any]] = None,
+        session: Optional[LongVideoSession] = None,
+        cache_config: Optional[KVCacheConfig] = None,
+        search_radius: int = 12,
+    ):
+        actual_ov = int(overlap_frames)
+        if actual_ov <= 0:
+            if session is not None and getattr(session, "is_current_clip_trimmed", False):
+                actual_ov = 0
+            elif session is not None:
+                actual_ov = int(session.last_rolling_frames)
+            elif cache_config is not None and prev_images is not None and prev_images.shape[0] > 0:
+                actual_ov = int(cache_config.rolling_frames)
+
+        stitched_img, stitched_aud, diag = color_match_and_stitch_segments(
+            prev_images=prev_images,
+            curr_images=curr_images,
+            overlap_frames=actual_ov,
+            smart_seam=smart_seam,
+            search_radius=search_radius,
+            max_phase_shift=0,
+            color_match_mode=color_match_mode,
+            color_match_strength=color_match_strength,
+            anchor_image=anchor_image,
+            anchor_pull_strength=anchor_pull_strength,
+            grade_decay_frames=grade_decay_frames,
+            blend_mode=blend_mode,
+            blend_frames=blend_frames,
+            prev_audio=prev_audio,
+            curr_audio=curr_audio,
+            audio_crossfade_ms=audio_crossfade_ms,
+            fps=fps,
+        )
+        total_f = int(stitched_img.shape[0]) if stitched_img is not None else 0
+        return (stitched_img, stitched_aud, total_f, json.dumps(diag, ensure_ascii=False, indent=2))
+
+
+class H3PrefixDriftQAProbe:
+    """Structured Segment Drift & Seam QA Probe (Gate B in-graph circuit breaker).
+
+    Emits `seam_jump_score`, `sharpness_ratio_vs_anchor`, `color_drift_score`, and `recommend_anchor_reset`
+    directly inside ComfyUI so PrefixStream micro-chains auto-warn before A12-style segment 13 collapse!
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "curr_images": ("IMAGE", {"tooltip": "当前生成的片段画面"}),
+                "chain_segment_index": ("INT", {
+                    "default": 1, "min": 1, "max": 999, "step": 1,
+                    "tooltip": "当前处于连续接力链的第几段（推荐 <=3 段为一微链，满 3 段后用新关键帧重置锚点）"
+                }),
+                "overlap_frames": ("INT", {
+                    "default": 0, "min": 0, "max": 192, "step": 1,
+                    "tooltip": "未裁切画面开头包含的前缀帧数（已裁切则填 0）"
+                }),
+                "max_safe_chain_length": ("INT", {
+                    "default": 3, "min": 1, "max": 20, "step": 1,
+                    "tooltip": "最大安全连续续写段数（默认 3 段，防止 13 段长链崩坏）"
+                }),
+                "seam_jump_threshold": ("FLOAT", {"default": 0.12, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "sharpness_min_ratio": ("FLOAT", {"default": 0.72, "min": 0.10, "max": 1.50, "step": 0.02}),
+                "color_drift_threshold": ("FLOAT", {"default": 0.10, "min": 0.01, "max": 1.0, "step": 0.01}),
+            },
+            "optional": {
+                "prev_images": ("IMAGE", {"tooltip": "上一段画面（用于计算接缝跳变 seam_jump_score）"}),
+                "anchor_image": ("IMAGE", {"tooltip": "首镜关键帧/定妆锚点图（用于计算清晰度衰减与色偏）"}),
+                "curr_audio": ("AUDIO", {"tooltip": "可选音频流（用于检测削波爆音）"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "FLOAT", "FLOAT", "FLOAT", "BOOLEAN")
+    RETURN_NAMES = (
+        "qa_report_json",
+        "seam_jump_score",
+        "sharpness_ratio_vs_anchor",
+        "color_drift_score",
+        "recommend_anchor_reset",
+    )
+    FUNCTION = "probe"
+    CATEGORY = "MiniMaxH3/QA"
+
+    def probe(
+        self,
+        curr_images: torch.Tensor,
+        chain_segment_index: int = 1,
+        overlap_frames: int = 0,
+        max_safe_chain_length: int = 3,
+        seam_jump_threshold: float = 0.12,
+        sharpness_min_ratio: float = 0.72,
+        color_drift_threshold: float = 0.10,
+        prev_images: Optional[torch.Tensor] = None,
+        anchor_image: Optional[torch.Tensor] = None,
+        curr_audio: Optional[Dict[str, Any]] = None,
+    ):
+        res = evaluate_prefix_drift_qa(
+            curr_images=curr_images,
+            prev_images=prev_images,
+            anchor_image=anchor_image,
+            curr_audio=curr_audio,
+            chain_segment_index=chain_segment_index,
+            overlap_frames=overlap_frames,
+            max_safe_chain_length=max_safe_chain_length,
+            seam_jump_threshold=seam_jump_threshold,
+            sharpness_min_ratio=sharpness_min_ratio,
+            color_drift_threshold=color_drift_threshold,
+        )
+        return (
+            json.dumps(res, ensure_ascii=False, indent=2),
+            float(res["seam_jump_score"]),
+            float(res["sharpness_ratio_vs_anchor"]),
+            float(res["color_drift_score"]),
+            bool(res["recommend_anchor_reset"]),
+        )
+
+
+# ===========================================================================
+# Upgrade 2 — H3 150-Char 4-Sentence Prompt Compiler & Contradiction Guard
+# ===========================================================================
+
+class H3FourSentencePromptNode:
+    """Empirical 91%-obedience 150-char 4-sentence H3 Prompt Compiler + Contradiction Guard.
+
+    Enforces:
+    - Sentence 1: Subject + locked visual anchor (<=30 chars), separated from long Setting Bible lore.
+    - Sentence 2: Concrete filmable micro-action + scene (rewrites vague emotion words; A30 closed-lip guard).
+    - Sentence 3: Camera language strictly <=2 of 3 dimensions (shot_size / camera_movement / lighting).
+    - Sentence 4: Unified texture & palette closure.
+    - Negative constraints capped at <=2 items + contradiction detection/auto-resolution.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "scene_preset": ([
+                    "drama",
+                    "mv_broll",
+                    "listening_reaction",
+                    "talking_head",
+                    "commercial",
+                ], {
+                    "default": "drama",
+                    "tooltip": "场景预设：drama(漫剧四句全开) / mv_broll(MV拍场面) / listening_reaction(A30闭唇倾听防张嘴) / talking_head(口播省镜头) / commercial(广告精确入画秒数)"
+                }),
+                "subject_anchor": ("STRING", {
+                    "default": "穿米色风衣的短发女孩",
+                    "multiline": False,
+                    "tooltip": "第1句 主体+外观锚点（<=30字写死特征，或填设定库编号如 R01）"
+                }),
+                "action_and_scene": ("STRING", {
+                    "default": "天台边缘缓步转身，风吹动发梢，身后是夜色城市灯海",
+                    "multiline": True,
+                    "tooltip": "第2句 动作+场景（自动将'很纠结/很伤心'转为具体可拍微动作）"
+                }),
+                "shot_size": ("STRING", {
+                    "default": "近景",
+                    "tooltip": "第3句维度A：景别（如 特写 / 近景 / 中景 / 全景；留空表示不指定）"
+                }),
+                "camera_movement": ("STRING", {
+                    "default": "Dolly in 缓慢推近",
+                    "tooltip": "第3句维度B：专业运镜术语（如 Dolly in / Orbit 环绕 / Tracking 跟拍 / 固定镜头）"
+                }),
+                "lighting": ("STRING", {
+                    "default": "侧逆光",
+                    "tooltip": "第3句维度C：光线（自动执行景别/运镜/光线三选二铁律，防指令淹没）"
+                }),
+                "style_closure": ("STRING", {
+                    "default": "胶片颗粒，冷调夜景，情绪克制",
+                    "tooltip": "第4句 风格收尾：统一质感与色调"
+                }),
+                "contradiction_policy": (["auto_resolve", "warn_only"], {
+                    "default": "auto_resolve",
+                    "tooltip": "检测到'逆光剪影+面部清晰'或'闭唇倾听+开口唱歌'等互杀指令时自动消解或仅告警"
+                }),
+            },
+            "optional": {
+                "setting_bible_json": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "【设定与指令分离仓库】JSON格式存放角色小传/场景模板，生成时仅按 ID 提取精简视觉锚点，绝不把800字设定塞进单镜提示词"
+                }),
+                "character_id": ("STRING", {"default": "", "tooltip": "可选角色锚点编号（如 R01）"}),
+                "scene_id": ("STRING", {"default": "", "tooltip": "可选场景锚点编号（如 S03）"}),
+                "style_id": ("STRING", {"default": "", "tooltip": "可选风格锚点编号（如 ST01）"}),
+                "negative_constraints": ("STRING", {
+                    "default": "",
+                    "tooltip": "负面约束（自动截断保留最关键 <=2 条，杜绝负面清单污染）"
+                }),
+                "product_entry_second": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 30.0, "step": 0.1,
+                    "tooltip": "仅 commercial 广告模式生效：产品精确入画秒数"
+                }),
+                "ref_image_tag": ("STRING", {"default": "", "tooltip": "可选多模态图引用前缀（如 <Picture 1>）"}),
+                "ref_audio_tag": ("STRING", {"default": "", "tooltip": "可选多模态音频引用前缀（如 <Audio 1>）"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "INT", "BOOLEAN", "STRING")
+    RETURN_NAMES = (
+        "compiled_prompt",
+        "negative_prompt",
+        "estimated_obedience",
+        "has_contradiction",
+        "diagnostics_json",
+    )
+    FUNCTION = "compile_prompt"
+    CATEGORY = "MiniMaxH3/Prompt"
+
+    def compile_prompt(
+        self,
+        scene_preset: str = "drama",
+        subject_anchor: str = "穿米色风衣的短发女孩",
+        action_and_scene: str = "天台边缘缓步转身，风吹动发梢，身后是夜色城市灯海",
+        shot_size: str = "近景",
+        camera_movement: str = "Dolly in 缓慢推近",
+        lighting: str = "侧逆光",
+        style_closure: str = "胶片颗粒，冷调夜景，情绪克制",
+        contradiction_policy: str = "auto_resolve",
+        setting_bible_json: str = "",
+        character_id: str = "",
+        scene_id: str = "",
+        style_id: str = "",
+        negative_constraints: str = "",
+        product_entry_second: float = 0.0,
+        ref_image_tag: str = "",
+        ref_audio_tag: str = "",
+    ):
+        result = compile_h3_four_sentence_prompt(
+            subject_anchor=subject_anchor,
+            action_and_scene=action_and_scene,
+            shot_size=shot_size,
+            camera_movement=camera_movement,
+            lighting=lighting,
+            style_closure=style_closure,
+            scene_preset=scene_preset,
+            setting_bible_json=setting_bible_json,
+            character_id=character_id,
+            scene_id=scene_id,
+            style_id=style_id,
+            negative_constraints=negative_constraints,
+            contradiction_policy=contradiction_policy,
+            product_entry_second=product_entry_second,
+            ref_image_tag=ref_image_tag,
+            ref_audio_tag=ref_audio_tag,
+        )
+        return (
+            result["compiled_prompt"],
+            result["negative_prompt"],
+            int(result["estimated_obedience"]),
+            bool(result["has_contradiction"]),
+            json.dumps(result, ensure_ascii=False, indent=2),
+        )
+
+
+# ===========================================================================
+# Upgrade 3 — RTX 4060 Ti (8GB VRAM) Survival Kit & Solo MV Montage Stitcher
+# ===========================================================================
+
+class H3VRAMStageGate8GB:
+    """8GB VRAM Stage-Gate Cleaner & Sequential Eviction Barrier for RTX 4060 Ti workflows.
+
+    Forces `comfy.model_management.unload_all_models()`, `soft_empty_cache()`, `gc.collect()`,
+    and `torch.cuda.empty_cache()` (plus optional CPU offload of passthrough tensors) between heavy stages:
+    Seed-VC -> FLUX.3 Klein Keyframe -> LongCat A-Roll -> H3 PrefixStream B-Roll -> Tiled VAE Decode.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "passthrough": (any_type, {"tooltip": "需要跨阶段传递的数据（支持 IMAGE / LATENT / AUDIO / CONDITIONING / 任意类型）"}),
+                "stage_name": ("STRING", {
+                    "default": "Post-Sampler -> Pre-TiledVAE (8GB Evict)",
+                    "tooltip": "当前显存清理关卡名称（写入日志与诊断报告）"
+                }),
+                "unload_models": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "强制卸载 ComfyUI 驻留模型（防止 Qwen3VL / FLUX / H3 同时占满 8GB 显存）"
+                }),
+                "empty_cuda_cache": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "清空 PyTorch CUDA 缓存块与 Python GC 循环引用"
+                }),
+                "offload_passthrough_to_cpu": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "将透传的 IMAGE/LATENT/AUDIO 张量移至系统内存，确保下一阶段加载模型前 GPU 显存处于最低基线"
+                }),
+                "vram_budget_mb": ("INT", {
+                    "default": 8188, "min": 2048, "max": 81920, "step": 1,
+                    "tooltip": "目标显卡总显存预算（RTX 4060 Ti 8GB 实测为 8188 MiB）"
+                }),
+            },
+            "optional": {
+                "wait_for": (any_type, {"tooltip": "可选执行顺序栅栏：连接上一阶段末端输出，确保上一阶段完全结束后再清理显存"}),
+                "always_execute": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = (any_type, "STRING", "FLOAT")
+    RETURN_NAMES = ("passthrough_out", "vram_report_json", "free_vram_mb")
+    FUNCTION = "clean_stage"
+    CATEGORY = "MiniMaxH3/VRAM_8GB"
+
+    @classmethod
+    def IS_CHANGED(cls, always_execute: bool = True, **kwargs):
+        if always_execute:
+            return float("nan")
+        return False
+
+    def clean_stage(
+        self,
+        passthrough: Any,
+        stage_name: str = "Post-Sampler -> Pre-TiledVAE (8GB Evict)",
+        unload_models: bool = True,
+        empty_cuda_cache: bool = True,
+        offload_passthrough_to_cpu: bool = True,
+        vram_budget_mb: int = 8188,
+        wait_for: Any = None,
+        always_execute: bool = True,
+    ):
+        _ = wait_for
+        _ = always_execute
+        out_val, report, free_mb = run_vram_stage_gate(
+            passthrough=passthrough,
+            stage_name=stage_name,
+            unload_models=unload_models,
+            empty_cuda_cache=empty_cuda_cache,
+            offload_passthrough_to_cpu=offload_passthrough_to_cpu,
+            vram_budget_mb=vram_budget_mb,
+        )
+        return (out_val, json.dumps(report, ensure_ascii=False, indent=2), float(free_mb))
+
+
+class H3LongCatMVMontageStitcher:
+    """Dual-Engine Solo MV Timeline Stitcher: LongCat Singing A-Roll ('唱整段') + H3 B-Roll ('拍场面').
+
+    Locks all visual cuts directly to a single authoritative `master_audio` song tensor (`48kHz`/`44.1kHz`)
+    with automatic FPS conversion (e.g. LongCat 30fps -> Master 24fps), aspect-safe spatial framing,
+    cross-engine CIE LAB color harmonization, and 0.0ms cumulative audio drift!
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "master_audio": ("AUDIO", {"tooltip": "唯一权威主音轨（如 48kHz/44.1kHz 原曲或 Seed-VC 歌声转换母带），全程零漂移锁死"}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.01}),
+                "target_width": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8, "tooltip": "0 = 自动跟随首段接入视频宽度"}),
+                "target_height": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8, "tooltip": "0 = 自动跟随首段接入视频高度"}),
+                "fit_mode": (["cover_crop", "letterbox", "stretch"], {
+                    "default": "cover_crop",
+                    "tooltip": "双引擎画幅比例不完全一致时的对齐策略：cover_crop 等比居中裁切无黑边"
+                }),
+                "transition_frames": ("INT", {
+                    "default": 3, "min": 0, "max": 16, "step": 1,
+                    "tooltip": "A/B 轨切换处的微溶解过渡帧数（0 = 卡鼓点硬切；2~4 = 柔和过渡且绝不改变总帧数）"
+                }),
+                "color_harmonize_broll_to_aroll": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "自动将 H3 场面镜头与 LongCat 演唱主镜头的 LAB 色温/明暗拉齐，消除双模型切换违和感"
+                }),
+                "timeline_spec_json": ("STRING", {
+                    "default": "auto_alternating",
+                    "multiline": True,
+                    "tooltip": "填 'auto_alternating' 自动交替编排已接入的 A-Roll / B-Roll；或填入精确时间轴 JSON 数组 [{'role':'aroll','clip_slot':'aroll_1','start_sec':0,'end_sec':4}]"
+                }),
+            },
+            "optional": {
+                "aroll_images_1": ("IMAGE", {"tooltip": "LongCat 唱整段 A-Roll 镜头 1"}),
+                "broll_images_1": ("IMAGE", {"tooltip": "H3 PrefixStream 拍场面 B-Roll 镜头 1"}),
+                "aroll_images_2": ("IMAGE", {"tooltip": "LongCat 唱整段 A-Roll 镜头 2"}),
+                "broll_images_2": ("IMAGE", {"tooltip": "H3 PrefixStream 拍场面 B-Roll 镜头 2"}),
+                "aroll_images_3": ("IMAGE", {"tooltip": "LongCat 唱整段 A-Roll 镜头 3"}),
+                "broll_images_3": ("IMAGE", {"tooltip": "H3 PrefixStream 拍场面 B-Roll 镜头 3"}),
+                "aroll_images_4": ("IMAGE", {"tooltip": "LongCat 唱整段 A-Roll 镜头 4"}),
+                "broll_images_4": ("IMAGE", {"tooltip": "H3 PrefixStream 拍场面 B-Roll 镜头 4"}),
+                "anchor_style_image": ("IMAGE", {"tooltip": "可选全局色彩定妆基准图（如 FLUX 首帧关键图）"}),
+                "aroll_source_fps": ("FLOAT", {"default": 30.0, "min": 1.0, "max": 120.0, "tooltip": "LongCat A-Roll 原始帧率（LongCat 默认 30fps，自动重采样至主时间轴 fps）"}),
+                "broll_source_fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "tooltip": "H3 B-Roll 原始帧率（H3 默认 24fps）"}),
+                "target_sample_rate": ("INT", {"default": 0, "min": 0, "max": 96000, "tooltip": "0 = 保持母带原始采样率（如 48000 或 44100）"}),
+                "master_start_sec": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 3600.0, "step": 0.01}),
+                "default_segment_sec": ("FLOAT", {"default": 4.0, "min": 0.5, "max": 60.0, "step": 0.1}),
+                "color_harmonize_strength": ("FLOAT", {"default": 0.65, "min": 0.0, "max": 1.0, "step": 0.05}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING")
+    RETURN_NAMES = ("mv_images", "mv_audio", "total_frames", "montage_report_json")
+    FUNCTION = "assemble_mv"
+    CATEGORY = "MiniMaxH3/MV_Studio"
+
+    def assemble_mv(
+        self,
+        master_audio: Dict[str, Any],
+        fps: float = 24.0,
+        target_width: int = 0,
+        target_height: int = 0,
+        fit_mode: str = "cover_crop",
+        transition_frames: int = 3,
+        color_harmonize_broll_to_aroll: bool = True,
+        timeline_spec_json: str = "auto_alternating",
+        aroll_images_1: Optional[torch.Tensor] = None,
+        broll_images_1: Optional[torch.Tensor] = None,
+        aroll_images_2: Optional[torch.Tensor] = None,
+        broll_images_2: Optional[torch.Tensor] = None,
+        aroll_images_3: Optional[torch.Tensor] = None,
+        broll_images_3: Optional[torch.Tensor] = None,
+        aroll_images_4: Optional[torch.Tensor] = None,
+        broll_images_4: Optional[torch.Tensor] = None,
+        anchor_style_image: Optional[torch.Tensor] = None,
+        aroll_source_fps: float = 30.0,
+        broll_source_fps: float = 24.0,
+        target_sample_rate: int = 0,
+        master_start_sec: float = 0.0,
+        default_segment_sec: float = 4.0,
+        color_harmonize_strength: float = 0.65,
+    ):
+        slots = {
+            "aroll_1": aroll_images_1,
+            "broll_1": broll_images_1,
+            "aroll_2": aroll_images_2,
+            "broll_2": broll_images_2,
+            "aroll_3": aroll_images_3,
+            "broll_3": broll_images_3,
+            "aroll_4": aroll_images_4,
+            "broll_4": broll_images_4,
+        }
+        mv_img, mv_aud, total_f, report = stitch_dual_engine_mv_montage(
+            master_audio=master_audio,
+            fps=fps,
+            target_width=target_width,
+            target_height=target_height,
+            fit_mode=fit_mode,
+            transition_frames=transition_frames,
+            color_harmonize_broll_to_aroll=color_harmonize_broll_to_aroll,
+            color_harmonize_strength=color_harmonize_strength,
+            timeline_spec_json=timeline_spec_json,
+            default_segment_sec=default_segment_sec,
+            aroll_source_fps=aroll_source_fps,
+            broll_source_fps=broll_source_fps,
+            target_sample_rate=target_sample_rate,
+            master_start_sec=master_start_sec,
+            anchor_style_image=anchor_style_image,
+            clip_slots=slots,
+        )
+        return (mv_img, mv_aud, int(total_f), json.dumps(report, ensure_ascii=False, indent=2))
+
+
 NODE_CLASS_MAPPINGS = {
     "MiniMaxDiskVideoStream": MiniMaxDiskVideoStreamNode,
     "MiniMaxPrefixCacheConfig": MiniMaxPrefixCacheConfigNode,
@@ -1745,6 +2428,12 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxSafeVAEDecodeAudio": MiniMaxSafeVAEDecodeAudioNode,
     "MiniMaxVideoChunkSlicer": MiniMaxVideoChunkSlicerNode,
     "MiniMaxVideoPatchReassembler": MiniMaxVideoPatchReassemblerNode,
+    "H3PrefixSmartSeamSelector": H3PrefixSmartSeamSelector,
+    "H3PrefixColorMatchStitch": H3PrefixColorMatchStitch,
+    "H3PrefixDriftQAProbe": H3PrefixDriftQAProbe,
+    "H3FourSentencePromptNode": H3FourSentencePromptNode,
+    "H3VRAMStageGate8GB": H3VRAMStageGate8GB,
+    "H3LongCatMVMontageStitcher": H3LongCatMVMontageStitcher,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1764,6 +2453,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxSafeVAEDecodeAudio": "MiniMax H3 Safe VAE Decode (Audio)",
     "MiniMaxVideoChunkSlicer": "🎬 MiniMax Video Chunk Slicer (长视频智能切片器)",
     "MiniMaxVideoPatchReassembler": "🧩 MiniMax Video Patch Reassembler (视频回填缝合器)",
+    "H3PrefixSmartSeamSelector": "✂️ H3 Prefix Smart Seam Selector (智能最小跳变寻缝)",
+    "H3PrefixColorMatchStitch": "🎨 H3 Prefix LAB Color-Match & Flow Stitcher (无痕色彩/光流缝合)",
+    "H3PrefixDriftQAProbe": "🔬 H3 Prefix Drift & Seam QA Probe (长链劣化熔断探针)",
+    "H3FourSentencePromptNode": "✍️ H3 150-Char 4-Sentence Prompt Compiler (91%服从度四句编译器)",
+    "H3VRAMStageGate8GB": "🛡️ H3 RTX 4060 Ti 8GB VRAM Stage-Gate Cleaner (跨阶段显存清道夫)",
+    "H3LongCatMVMontageStitcher": "🎵 H3 × LongCat Dual-Engine MV Montage Stitcher (音画零漂移母带混剪)",
 }
 
 

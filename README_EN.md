@@ -83,6 +83,24 @@ Target empty AV latent ───────────────┼──►
 | **`MiniMax H3 Clip Bin Picker`** | `MiniMaxH3/PrefixStream` | Gallery-based loader (supports 1-click toggle between Card Deck and Lineage Tree) that exposes a selected clip's latent, tail frame, prompt, and ID. |
 | **`MiniMax H3 Clip Bin Tree Picker`** | `MiniMaxH3/ClipBin` | Visually browses and selects clips via an interactive DAG lineage tree graph for exploring non-linear story branches. |
 | **`MiniMax Cache Telemetry Monitor`** | `MiniMaxH3/PrefixStream` | Shows the active continuation mode, protected-context geometry, and session progress. |
+| **`H3PrefixSmartSeamSelector`** | `MiniMaxH3/SeamlessStitch` | Searches within the overlap window for the frame cut with minimal pixel, luminance, Sobel-edge, and velocity discontinuity while preserving 100% exact AV duration (`max_phase_shift=0`). |
+| **`H3PrefixColorMatchStitch`** | `MiniMaxH3/SeamlessStitch` | Perceptual **CIE L\*a\*b\*** luminance/chroma transfer + Shot-1 anchor pull + pure-PyTorch coarse-to-fine Lucas-Kanade optical-flow warp micro-crossfade (`2–6` frames) + zero-click cosine audio splice. |
+| **`H3PrefixDriftQAProbe`** | `MiniMaxH3/QA` | Real-time segment drift & seam QA circuit breaker outputting `seam_jump_score`, `sharpness_ratio_vs_anchor`, `color_drift_score`, and `recommend_anchor_reset` (enforcing `<=3`-segment micro-chains). |
+| **`H3FourSentencePromptNode`** | `MiniMaxH3/Prompt` | Empirical 91%-obedience 150-char 4-sentence H3 prompt compiler with Setting Bible separation, abstract-emotion -> concrete micro-action rewriting, A30 closed-lip guard, 2-of-3 camera rule, and contradiction firewall. |
+| **`H3VRAMStageGate8GB`** | `MiniMaxH3/VRAM_8GB` | Sequential VRAM eviction barrier (`unload_all_models` + `soft_empty_cache` + `gc.collect` + CPU tensor offload) validated on RTX 4060 Ti 8GB (`8188 MiB`). |
+| **`H3LongCatMVMontageStitcher`** | `MiniMaxH3/MV_Studio` | Dual-Engine Solo MV stitcher combining 30fps LongCat Singing A-Roll with 24fps H3 PrefixStream B-Roll locked to a single `48kHz`/`44.1kHz` master song with `0.0 ms` drift and cross-engine LAB color harmonization. |
+
+---
+
+## RTX 4060 Ti (8GB VRAM) Profile & Stage-1 Draft -> Stage-2 Colab NVMe HD Workflow
+
+- **Recommended Startup Flags**: `--listen 0.0.0.0 --port 8188 --reserve-vram 0.5 --lowvram`
+- **8GB Draft Sweet Spot**: INT8 convrot H3 Turbo8 (`4` steps, `608x352` or `752x416`, `124` frames = `~45.6s` @ `~7.35 GiB` peak) + `H3VRAMStageGate8GB` between Qwen3-VL / DiT / `VAEDecodeTiled`.
+- **Anti-Drift Rule**: Cap PrefixStream chains at **`<= 3` segments** (`H3PrefixDriftQAProbe` triggers `recommend_anchor_reset`), pair with Stage-2 Colab NVMe `LongCat-Video-Avatar 1.6` vocal A-Roll, and lock to the master track via `H3LongCatMVMontageStitcher`.
+- **New Workflow Templates**:
+  - [`examples/MiniMaxH3_4060Ti_8GB_3Seg_PrefixStream_MicroChain.json`](examples/MiniMaxH3_4060Ti_8GB_3Seg_PrefixStream_MicroChain.json)
+  - [`examples/H3_LongCat_DualEngine_SoloMV_Master_Template.json`](examples/H3_LongCat_DualEngine_SoloMV_Master_Template.json)
+  - [`docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md`](docs/RTX_4060TI_8GB_AND_MV_PIPELINE_CN.md)
 
 ---
 
